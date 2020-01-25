@@ -5,6 +5,7 @@ namespace SeriouslySimplePodcasting\Controllers;
 use SeriouslySimplePodcasting\Handlers\Upgrade_Handler;
 use SeriouslySimplePodcasting\Ajax\Ajax_Handler;
 use SeriouslySimplePodcasting\Handlers\Castos_Handler;
+use SeriouslySimplePodcasting\Helpers\Log_Helper;
 
 // Exit if accessed directly.
 if ( ! defined( 'ABSPATH' ) ) {
@@ -26,13 +27,23 @@ class Admin_Controller extends Controller {
 	 */
 	protected $ajax_handler;
 
+	/**
+	 * @var object instance of Upgrade_Handler
+	 */
 	protected $upgrade_handler;
+
+	/**
+	 * @var object instance of Feed_Controller
+	 */
+	protected $feed_controller;
+
+	protected $logger;
 
 	/**
 	 * Admin_Controller constructor.
 	 *
-	 * @param $file main plugin file
-	 * @param $version plugin version
+	 * @param $file string main plugin file
+	 * @param $version string plugin version
 	 */
 	public function __construct( $file, $version ) {
 		parent::__construct( $file, $version );
@@ -48,19 +59,17 @@ class Admin_Controller extends Controller {
 
 		$this->upgrade_handler = new Upgrade_Handler();
 
+		$this->feed_controller = new Feed_Controller( $this->file, $this->version );
+
+		$this->logger = new Log_Helper();
+
 		// Handle localisation.
 		$this->load_plugin_textdomain();
 
 		add_action( 'init', array( $this, 'load_localisation' ), 0 );
 
 		// Regsiter podcast post type, taxonomies and meta fields.
-		add_action( 'init', array( $this, 'register_post_type' ), 1 );
-
-		// Register podcast feed.
-		add_action( 'init', array( $this, 'add_feed' ), 1 );
-
-		// Handle v1.x feed URL as well as feed URLs for default permalinks.
-		add_action( 'init', array( $this, 'redirect_old_feed' ) );
+		add_action( 'init', array( $this, 'register_post_type' ), 11 );
 
 		// Setup custom permalink structures.
 		add_action( 'init', array( $this, 'setup_permastruct' ), 10 );
@@ -71,8 +80,14 @@ class Admin_Controller extends Controller {
 		// Dismiss the upgrade screen and redirect to the last screen the user was on
 		add_action( 'init', array( $this, 'dismiss_upgrade_screen' ) );
 
+		// Dismiss the categories update screen
+		add_action( 'init', array( $this, 'dismiss_categories_update' ) );
+
 		// Hide WP SEO footer text for podcast RSS feed.
 		add_filter( 'wpseo_include_rss_footer', array( $this, 'hide_wp_seo_rss_footer' ) );
+
+		// Delete podcast from Castos
+		add_action( 'trashed_post', array( $this, 'delete_post' ), 11, 1 );
 
 		if ( is_admin() ) {
 
@@ -137,6 +152,10 @@ class Admin_Controller extends Controller {
 
 			// Check if a valid permalink structure is set and show a message
 			add_action( 'admin_init', array( $this, 'check_valid_permalink' ) );
+
+			// Check if the podcast feed category update message needs to trigger
+			add_action( 'admin_init', array( $this, 'check_category_update_required' ) );
+
 
 			// Filter Embed HTML Code
 			add_filter( 'embed_html', array( $this, 'ssp_filter_embed_code' ), 10, 1 );
@@ -241,7 +260,6 @@ class Admin_Controller extends Controller {
 	 * @return void
 	 */
 	private function register_taxonomies() {
-
 		$podcast_post_types = ssp_post_types( true );
 
 		$series_labels = array(
@@ -1084,8 +1102,8 @@ HTML;
 		if ( ! isset( $plugin_data['slug'] ) || $this->plugin_slug != $plugin_data['slug'] ) {
 			return $plugin_meta;
 		}
-		$plugin_meta['docs']   = '<a href="http://www.seriouslysimplepodcasting.com/documentation/" target="_blank">' . __( 'Documentation', 'seriously-simple-podcasting' ) . '</a>';
-		$plugin_meta['addons'] = '<a href="http://www.seriouslysimplepodcasting.com/add-ons/" target="_blank">' . __( 'Add-ons', 'seriously-simple-podcasting' ) . '</a>';
+		$plugin_meta['docs']   = '<a href="https://support.castos.com/?utm_medium=sspodcasting&utm_source=wordpress&utm_campaign=wpplugin_08_2019" target="_blank">' . __( 'Documentation', 'seriously-simple-podcasting' ) . '</a>';
+		$plugin_meta['addons'] = '<a href="https://castos.com/add-ons/?utm_medium=sspodcasting&utm_source=wordpress&utm_campaign=wpplugin_08_2019" target="_blank">' . __( 'Add-ons', 'seriously-simple-podcasting' ) . '</a>';
 		$plugin_meta['review'] = '<a href="https://wordpress.org/support/view/plugin-reviews/' . $plugin_data['slug'] . '?rate=5#postform" target="_blank">' . __( 'Write a review', 'seriously-simple-podcasting' ) . '</a>';
 		return $plugin_meta;
 	}
@@ -1228,15 +1246,6 @@ HTML;
 	}
 
 	/**
-	 * Register podcast feed
-	 * @return void
-	 */
-	public function add_feed() {
-		$feed_slug = apply_filters( 'ssp_feed_slug', $this->token );
-		add_feed( $feed_slug, array( $this, 'feed_template' ) );
-	}
-
-	/**
 	 * Hide RSS footer created by WordPress SEO from podcast RSS feed
 	 *
 	 * @param  boolean $include_footer Default inclusion value
@@ -1253,64 +1262,22 @@ HTML;
 	}
 
 	/**
-	 * Load feed template
-	 * @return void
-	 */
-	public function feed_template() {
-		global $wp_query;
-
-		// Prevent 404 on feed
-		$wp_query->is_404 = false;
-		status_header( 200 );
-
-		$file_name = 'feed-podcast.php';
-
-		$user_template_file = apply_filters( 'ssp_feed_template_file', trailingslashit( get_stylesheet_directory() ) . $file_name );
-
-		// Any functions hooked in here must NOT output any data or else feed will break
-		do_action( 'ssp_before_feed' );
-
-		// Load user feed template if it exists, otherwise use plugin template
-		if ( file_exists( $user_template_file ) ) {
-			require( $user_template_file );
-		} else {
-			require( $this->template_path . $file_name );
-		}
-
-		// Any functions hooked in here must NOT output any data or else feed will break
-		do_action( 'ssp_after_feed' );
-
-		exit;
-	}
-
-	/**
-	 * Redirect feed URLs created prior to v1.8 to ensure backwards compatibility
-	 * @return void
-	 */
-	public function redirect_old_feed() {
-		if ( isset( $_GET['feed'] ) && in_array( $_GET['feed'], array( $this->token, 'itunes' ) ) ) {
-			$this->feed_template();
-			exit;
-		}
-	}
-
-	/**
-	 * Flush rewrite rules on plugin acivation
+	 * All plugin activation functionality
 	 * @return void
 	 */
 	public function activate() {
-
 		// Setup all custom URL rules
 		$this->register_post_type();
-		$this->add_feed();
+		// Setup feed
+		$this->feed_controller->add_feed();
+		// Setup permalink structure
 		$this->setup_permastruct();
-
 		// Flush permalinks
 		flush_rewrite_rules( true );
 	}
 
 	/**
-	 * Flush rewrite rules on plugin deacivation
+	 * All plugin deactivation functionality
 	 * @return void
 	 */
 	public function deactivate() {
@@ -1325,13 +1292,7 @@ HTML;
 
 		$previous_version = get_option( 'ssp_version', '1.0' );
 
-		if ( version_compare( $previous_version, '1.13.1', '<' ) ) {
-			flush_rewrite_rules();
-		}
-
-		if ( version_compare( $previous_version, '1.19.20', '<=' ) ) {
-			$this->upgrade_handler->upgrade_subscribe_links_options();
-		}
+		$this->upgrade_handler->run_upgrades( $previous_version );
 
 		// always just check if the directory is ok
 		ssp_get_upload_directory( false );
@@ -1444,7 +1405,7 @@ HTML;
 	}
 
 	/**
-	 * Send the podcast details to Seriously Simple Hosting
+	 * Send the podcast details to Castos
 	 *
 	 * @param $id
 	 * @param $post
@@ -1452,7 +1413,7 @@ HTML;
 	public function update_podcast_details( $id, $post ) {
 
 		/**
-		 * Don't trigger this if we're not connected to Podcast Motor
+		 * Don't trigger this if we're not connected to Castos
 		 */
 		if ( ! ssp_is_connected_to_podcastmotor() ) {
 			return;
@@ -1461,7 +1422,7 @@ HTML;
 		/**
 		 * Only trigger this when the post type is podcast
 		 */
-		if ( ! in_array( $post->post_type, ssp_post_types( true ) ) ) {
+		if ( ! in_array( $post->post_type, ssp_post_types( true ), true ) ) {
 			return;
 		}
 
@@ -1489,15 +1450,42 @@ HTML;
 		}
 
 		$castos_handler = new Castos_Handler();
-		$response = $castos_handler->upload_podcast_to_podmotor( $post );
+		$response       = $castos_handler->upload_podcast_to_podmotor( $post );
 
-		if ( 'success' == $response['status'] ) {
+		if ( 'success' === $response['status'] ) {
 			$podmotor_episode_id = $response['episode_id'];
 			if ( $podmotor_episode_id ) {
 				update_post_meta( $id, 'podmotor_episode_id', $podmotor_episode_id );
 			}
 		}
 
+	}
+
+	/**
+	 * Delete the podcast from Castos
+	 *
+	 * @param $post_id
+	 */
+	public function delete_post( $post_id ) {
+
+		/**
+		 * Don't trigger this if we're not connected to Podcast Motor
+		 */
+		if ( ! ssp_is_connected_to_podcastmotor() ) {
+			return;
+		}
+
+		$post = get_post( $post_id );
+
+		/**
+		 * Only trigger this when the post type is podcast
+		 */
+		if ( ! in_array( $post->post_type, ssp_post_types( true ), true ) ) {
+			return;
+		}
+
+		$castos_handler = new Castos_Handler();
+		$castos_handler->delete_podcast( $post );
 	}
 
 	/**
@@ -1557,6 +1545,11 @@ HTML;
 			update_option( 'ss_podcasting_podmotor_import_podcasts', 'false' );
 		}
 	}
+
+	/**
+	 * Admin notices
+	 * Ideally this should be moved to it's own controller
+	 */
 
 	/**
 	 * Show 'existing podcast' notice
@@ -1640,6 +1633,7 @@ HTML;
 
 		// check version number is upgraded
 		$ssp_version = get_option( 'ssp_version', '' );
+
 		// The enhanced register_meta function is only available for WordPress 4.6+
 		if ( version_compare( $ssp_version, '1.15.1', '<' ) ) {
 			return;
@@ -1768,4 +1762,81 @@ HTML;
 		</div>
 		<?php
 	}
+
+
+	/**
+	 * Checks to see if we're on a version higher than 1.20.6
+	 */
+	public function check_category_update_required() {
+		// check if the user has dismissed this notice previously
+		$ssp_categories_update_dismissed = get_option( 'ssp_categories_update_dismissed', 'false' );
+		if ( 'true' === $ssp_categories_update_dismissed ) {
+			return;
+		}
+		// trigger the notice
+		add_action( 'admin_notices', array( $this, 'categories_update_notice' ) );
+	}
+
+	/**
+	 * Show 'categories need updating' notice
+	 */
+	public function categories_update_notice() {
+		$feed_settings_url = add_query_arg(
+			array(
+				'post_type'                     => $this->token,
+				'page'                          => 'podcast_settings',
+				'tab'                           => 'feed-details',
+				'ssp_dismiss_categories_update' => 'true',
+			),
+			admin_url( 'edit.php' )
+		);
+
+		$ignore_message_url = add_query_arg( array( 'ssp_dismiss_categories_update' => 'true' ) );
+
+		$message            = __( 'Seriously Simple Podcasting\'s feed categories have been updated.', 'seriously-simple-podcasting' );
+		$feed_settings_link = sprintf(
+			wp_kses(
+				// translators: Placeholder is the url to the Feed details
+				__( 'Please check your <a href="%s">Feed details</a>  to update your categories.', 'seriously-simple-podcasting' ),
+				array(
+					'a' => array(
+						'href' => array(),
+					),
+				)
+			),
+			esc_url( $feed_settings_url )
+		);
+		$ignore_message_link = sprintf(
+			wp_kses(
+				// translators: Placeholder is the url to dismiss the message
+				__( 'Alternatively you can <a href="%s">dismiss this message</a>.', 'seriously-simple-podcasting' ),
+				array(
+					'a' => array(
+						'href' => array(),
+					),
+				)
+			),
+			esc_url( $ignore_message_url )
+		);
+		?>
+		<div class="notice notice-info">
+			<p><?php echo $message; ?></p>
+			<p><?php echo $feed_settings_link; ?></p>
+			<p><?php echo $ignore_message_link; ?></p>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Dismiss categories update screen when user clicks 'Dismiss' link
+	 */
+	public function dismiss_categories_update() {
+		// Check if the ssp_dismiss_categories_update variable exists
+		$ssp_dismiss_categories_update = ( isset( $_GET['ssp_dismiss_categories_update'] ) ? sanitize_text_field( $_GET['ssp_dismiss_categories_update'] ) : '' );
+		if ( empty( $ssp_dismiss_categories_update ) ) {
+			return;
+		}
+		update_option( 'ssp_categories_update_dismissed', 'true' );
+	}
+
 }

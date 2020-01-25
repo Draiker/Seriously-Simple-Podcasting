@@ -2,7 +2,6 @@
 
 namespace SeriouslySimplePodcasting\Controllers;
 
-use SeriouslySimplePodcasting\Helpers\Log_Helper;
 use stdClass;
 use WP_Query;
 
@@ -33,6 +32,8 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 class Frontend_Controller extends Controller {
 
+	protected $episode_controller;
+
 	// @todo reference prior to analytics launch
 	public $style_guide = array(
 		'dark'     => '#3A3A3A',
@@ -51,6 +52,8 @@ class Frontend_Controller extends Controller {
 	public function __construct( $file, $version ) {
 
 		parent::__construct( $file, $version );
+
+		$this->episode_controller = new Episode_Controller( $file, $version );
 
 		global $large_player_instance_number;
 		$large_player_instance_number = 0;
@@ -205,6 +208,11 @@ class Frontend_Controller extends Controller {
 
 		global $post, $wp_current_filter, $episode_context;
 
+		// Don't do anything if we don't have a valid post object
+		if ( ! is_a( $post, 'WP_Post' ) ) {
+			return $content;
+		}
+
 		// Don't output unformatted data on excerpts
 		if ( in_array( 'get_the_excerpt', (array) $wp_current_filter, true ) ) {
 			return $content;
@@ -315,54 +323,25 @@ class Frontend_Controller extends Controller {
 
 	/**
 	 * Get episode enclosure
+	 * Wrapper for Episode_Controller get_enclosure method
+	 *
 	 * @param  integer $episode_id ID of episode
 	 * @return string              URL of enclosure
 	 */
 	public function get_enclosure( $episode_id = 0 ) {
-
-		if ( $episode_id ) {
-			return apply_filters( 'ssp_episode_enclosure', get_post_meta( $episode_id, apply_filters( 'ssp_audio_file_meta_key', 'audio_file' ), true ), $episode_id );
-		}
-
-		return '';
+		return $this->episode_controller->get_enclosure( $episode_id );
 	}
 
 	/**
 	 * Get download link for episode
+	 * Wrapper for Episode_Controller get_episode_download_link method
+	 *
 	 * @param  integer $episode_id ID of episode
+	 * @param  string $referrer Referrer
 	 * @return string              Episode download link
 	 */
 	public function get_episode_download_link( $episode_id, $referrer = '' ) {
-
-		// Get file URL
-		$file = $this->get_enclosure( $episode_id );
-
-		if ( ! $file ) {
-			return;
-		}
-
-		// Get download link based on permalink structure
-		if ( get_option( 'permalink_structure' ) ) {
-			$episode = get_post( $episode_id );
-			// Get file extension - default to MP3 to prevent empty extension strings
-			$ext = pathinfo( $file, PATHINFO_EXTENSION );
-			if ( ! $ext ) {
-				$ext = 'mp3';
-			}
-			$link = $this->home_url . 'podcast-download/' . $episode_id . '/' . $episode->post_name . '.' . $ext;
-		} else {
-			$link = add_query_arg( array( 'podcast_episode' => $episode_id ), $this->home_url );
-		}
-
-		// Allow for dyamic referrer
-		$referrer = apply_filters( 'ssp_download_referrer', $referrer, $episode_id );
-
-		// Add referrer flag if supplied
-		if ( $referrer ) {
-			$link = add_query_arg( array( 'ref' => $referrer ), $link );
-		}
-
-		return apply_filters( 'ssp_episode_download_link', esc_url( $link ), $episode_id, $file );
+		return $this->episode_controller->get_episode_download_link( $episode_id, $referrer );
 	}
 
 	/**
@@ -511,7 +490,6 @@ class Frontend_Controller extends Controller {
 	 * @return string              Media player HTML on success, empty string on failure
 	 */
 	public function load_media_player($src_file = '', $episode_id = 0, $player_size){
-
 		/**
 		 * Check if this player is being loaded via the AMP for WordPress plugin and if so, force the standard player
 		 * https://wordpress.org/plugins/amp/
@@ -520,8 +498,10 @@ class Frontend_Controller extends Controller {
 			$player_size = 'mini';
 		}
 
-		global $large_player_instance_number;
-		$large_player_instance_number++;
+		if ( $player_size == 'large' || $player_size == 'larger' ) {
+			global $large_player_instance_number;
+			$large_player_instance_number++;
+		}
 
 		$player = '';
 
@@ -873,6 +853,14 @@ class Frontend_Controller extends Controller {
 	 */
 	public function get_file_size( $file = '' ) {
 
+		/**
+		 * ssp_enable_get_file_size filter to allow this functionality to be disabled programmatically
+		 */
+		$enabled = apply_filters( 'ssp_enable_get_file_size', true );
+		if ( ! $enabled ) {
+			return false;
+		}
+
 		if ( $file ) {
 
 			// Include media functions if necessary
@@ -989,6 +977,10 @@ class Frontend_Controller extends Controller {
 
 		global $post;
 
+		if ( ! is_a( $post, 'WP_Post' ) ) {
+			return $excerpt;
+		}
+
 		if( post_password_required( $post->ID ) ) {
 			return $excerpt;
 		}
@@ -1103,6 +1095,14 @@ class Frontend_Controller extends Controller {
 	 * @return mixed        File duration on success, boolean false on failure
 	 */
 	public function get_file_duration( $file ) {
+
+		/**
+		 * ssp_enable_get_file_duration filter to allow this functionality to be disabled programmatically
+		 */
+		$enabled = apply_filters( 'ssp_enable_get_file_duration', true );
+		if ( ! $enabled ) {
+			return false;
+		}
 
 		if ( $file ) {
 
@@ -1627,7 +1627,9 @@ class Frontend_Controller extends Controller {
 		$player_wave_form_colour = get_option( 'ss_podcasting_player_wave_form_colour', false );
 		$player_wave_form_progress_colour = get_option( 'ss_podcasting_player_wave_form_progress_colour', false );
 
-		$large_player_instance_number+= 1;
+		if ( $style == 'large' || $style == 'larger' ) {
+			$large_player_instance_number+= 1;
+		}
 
 		if ( ! $episode_id || ! is_array( $content_items ) || empty( $content_items ) ) {
 			return;

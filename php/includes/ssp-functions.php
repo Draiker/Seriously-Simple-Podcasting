@@ -1,6 +1,6 @@
 <?php
 
-use SeriouslySimplePodcasting\Handlers\CastosHandler;
+use SeriouslySimplePodcasting\Handlers\Castos_Handler;
 
 // Exit if accessed directly.
 if ( ! defined( 'ABSPATH' ) ) {
@@ -22,13 +22,14 @@ if ( ! function_exists( 'ssp_is_php_version_ok' ) ) {
 		 */
 		add_action( 'admin_notices', 'ssp_php_version_notice' );
 		function ssp_php_version_notice() {
+			$error_notice = __( 'The Seriously Simple Podcasting plugin requires PHP version 5.6 or higher. Please contact your web host to upgrade your PHP version or deactivate the plugin.', 'seriously-simple-podcasting' );
+			$error_notice_apology = __( 'We apologise for any inconvenience.', 'seriously-simple-podcasting' );
 			?>
 			<div class="error">
 				<p>
-					<strong>The Seriously Simple Podcasting plugin requires PHP version 5.6 or higher. Please
-						contact your web host to upgrade your PHP version or deactivate the plugin.</strong>.
+					<strong><?php echo $error_notice; ?></strong>.
 				</p>
-				<p>We apologise for any inconvenience.</p>
+				<p><?php echo $error_notice_apology; ?></p>
 			</div>
 			<?php
 		}
@@ -141,7 +142,7 @@ if ( ! function_exists( 'ss_podcast' ) ) {
 
 		$defaults = array(
 			'echo'         => true,
-			'link_title'   => true,
+			'link_title'   => 'true',
 			'title'        => '',
 			'content'      => 'series',
 			'series'       => '',
@@ -193,7 +194,7 @@ if ( ! function_exists( 'ss_podcast' ) ) {
 					$class = 'podcast';
 
 					$title = get_the_title();
-					if ( true === $args['link_title'] ) {
+					if ( 'true' === $args['link_title'] ) {
 						$title = '<a href="' . esc_url( $post->url ) . '" title="' . esc_attr( $title ) . '">' . $title . '</a>';
 					}
 
@@ -221,7 +222,7 @@ if ( ! function_exists( 'ss_podcast' ) ) {
 					$class = 'podcast';
 
 					$title = $series->title;
-					if ( true === $args['link_title'] ) {
+					if ( 'true' === $args['link_title'] ) {
 						$title = '<a href="' . esc_url( $series->url ) . '" title="' . esc_attr( $title ) . '">' . $title . '</a>';
 					}
 
@@ -354,7 +355,13 @@ if ( ! function_exists( 'ssp_episodes' ) ) {
 		);
 
 		if ( $series ) {
-			$args['series'] = esc_attr( $series );
+			$args['tax_query'] = array(
+				array(
+					'taxonomy' => 'series',
+					'field'    => 'slug',
+					'terms'    => esc_attr( $series )
+				)
+			);
 		}
 
 		$args = apply_filters( 'ssp_episode_query_args', $args, $context );
@@ -521,7 +528,7 @@ if ( ! function_exists( 'convert_human_readable_to_bytes' ) ) {
 	 */
 	function convert_human_readable_to_bytes( $formatted_size ) {
 
-		$formatted_size_type  = preg_replace( '/[^a-z]/', '', $formatted_size );
+		$formatted_size_type  = preg_replace( '/[^a-z]/i', '', $formatted_size );
 		$formatted_size_value = trim( str_replace( $formatted_size_type, '', $formatted_size ) );
 
 		switch ( strtoupper( $formatted_size_type ) ) {
@@ -693,7 +700,7 @@ if ( ! function_exists( 'ssp_import_existing_podcasts' ) ) {
 
 				$podcast_data = ssp_build_podcast_data( $podcast_query );
 
-				$castos_handler           = new CastosHandler();
+				$castos_handler           = new Castos_Handler();
 				$upload_podcasts_response = $castos_handler->upload_podcasts_to_podmotor( $podcast_data );
 
 				if ( 'success' === $upload_podcasts_response['status'] ) {
@@ -1043,5 +1050,27 @@ if ( ! function_exists( 'get_series_data_for_castos' ) ) {
 
 		return $podcast;
 
+	}
+}
+
+if ( ! function_exists( 'parse_episode_url_with_media_prefix' ) ) {
+	/**
+	 * Takes an episode url and appends the media prefix in front of it
+	 *
+	 * @param string $audio_file_url
+	 * @param string $media_prefix
+	 *
+	 * @return string
+	 */
+	function parse_episode_url_with_media_prefix( $audio_file_url = '', $media_prefix = '' ) {
+		if ( empty( $media_prefix ) ) {
+			return $audio_file_url;
+		}
+		if ( empty( $audio_file_url ) ) {
+			return $audio_file_url;
+		}
+		$url_parts = wp_parse_url( $audio_file_url );
+
+		return $media_prefix . $url_parts['host'] . $url_parts['path'];
 	}
 }
